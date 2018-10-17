@@ -1,0 +1,111 @@
+        private bool insertWithAdapter(DataTable table, string tableName, Dictionary<string, string> fields)
+        {
+            Dictionary<string, object> colValues = new Dictionary<string, object>();
+            int rowsLength = table.Rows.Count;
+            string[] columns;
+            StringBuilder sbSQL = new StringBuilder();
+            int count = 0;
+
+            #region [初始化列]
+            if (fields == null)
+            {
+                foreach (DataColumn column in table.Columns)
+                {
+                    fields.Add(column.ColumnName, column.DataType.ToString());
+                    //info(string.Format("column bind - {0}:{1}", column.ColumnName, column.DataType.ToString()));
+                }
+            }
+            columns = fields.Keys.ToArray();
+            #endregion
+
+            #region [初始化列和列值]
+            for (int i = 0; i < columns.Length; i++)
+            {
+                object[] cells = new object[rowsLength];
+                string colName = columns[i];
+                for (int j = 0; j < rowsLength; j++)
+                {
+                    cells[j] = table.Rows[j][colName];
+                }
+                colValues.Add(colName, cells);
+                //info(string.Format("rows bind - {0}:{1}", colName, cells.Count()));
+            }
+            #endregion
+
+
+            //准备插入的SQL  
+            sbSQL.AppendFormat("INSERT INTO {0}(", tableName);
+            sbSQL.Append(string.Join(",", columns));
+            sbSQL.Append(") VALUES (");
+            sbSQL.Append(":" + string.Join(",:", columns));
+            sbSQL.Append(")");
+
+            Oracle.ManagedDataAccess.Client.OracleConnection conn = null;
+            Oracle.ManagedDataAccess.Client.OracleCommand cmd = null;
+            Oracle.ManagedDataAccess.Client.OracleTransaction trans = null;
+            try
+            {
+                //info(string.Format("准备写入{0} {1}行数据...",table,table.Rows.Count));
+                conn = (Oracle.ManagedDataAccess.Client.OracleConnection)dbAccess.CreateConnect();
+                cmd = conn.CreateCommand();
+                cmd.ArrayBindCount = rowsLength;
+                cmd.BindByName = true;
+                cmd.CommandType = CommandType.Text;
+                cmd.CommandText = sbSQL.ToString();
+                cmd.CommandTimeout = 60 * 60;
+
+                Oracle.ManagedDataAccess.Client.OracleParameter oraParam;
+                List<IDbDataParameter> cacher = new List<IDbDataParameter>();
+                Oracle.ManagedDataAccess.Client.OracleDbType dbType = Oracle.ManagedDataAccess.Client.OracleDbType.Varchar2;
+
+                foreach (string column in columns)
+                {
+                    if (column.IndexOf("TIMESTAMP")>-1)
+                    {
+                        dbType = Oracle.ManagedDataAccess.Client.OracleDbType.TimeStamp;
+                    }
+                    else
+                        dbType = getOracleDbType(fields[column]);
+                    oraParam = new Oracle.ManagedDataAccess.Client.OracleParameter(column, dbType);
+                    oraParam.Direction = ParameterDirection.Input;
+                    oraParam.Value = colValues[column];
+                    cmd.Parameters.Add(oraParam);
+                }
+
+                conn.Open();
+                trans = conn.BeginTransaction();
+                cmd.Transaction = trans;
+                count = cmd.ExecuteNonQuery();
+                trans.Commit();
+                //info(string.Format("成功写入{0} {1}行数据.", table, table.Rows.Count));
+            }
+            catch (DbException e)
+            {
+                if (trans != null)
+                {
+                    trans.Rollback();
+                }
+                UltraPower.Common.Log4Helper.Info(typeof(BulkData), e.Message);
+                UltraPower.Common.Log4Helper.Info(typeof(BulkData), sbSQL.ToString());
+            }
+            finally
+            {
+                if (trans != null)
+                {
+                    trans.Dispose();
+                }
+                if (cmd != null)
+                {
+                    cmd.Dispose();
+                }
+                if (conn != null)
+                {
+                    conn.Close();
+                    conn = null;
+                }
+            }
+            if (count > 0)
+                return true;
+            else
+                return false;
+        }
